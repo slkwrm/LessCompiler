@@ -1,0 +1,174 @@
+<?php
+class LessCompiler extends WireData implements Module, ConfigurableModule{
+	
+	/**
+	 * Less compiler
+	 *
+	 * Compiles less files to css using lessphp library.
+	 *
+	 * ProcessWire 2.x 
+	 * Copyright (C) 2012 by Ryan Cramer 
+	 * Licensed under GNU/GPL v2, see LICENSE.TXT
+	 * 
+	 * http://www.processwire.com
+	 * http://www.ryancramer.com
+	 *
+	 */
+	
+	protected static $defaultConfigData = array(
+		'less_folder_path' => 'bootstrap/less',
+		'css_folder_path' => 'styles',
+		'less_files_list' => 'bootstrap.less',
+		'compile_not_minified' => true,
+		'compile_minified' => true,
+		); 
+	
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Less Compiler',
+			'summary' => 'Compiles .less to .css using lessphp library. This is just first and very early version, almost not tested, so may be buggy. Be careful, don\'t use it in production',
+			'href' => 'http://processwire.com',
+			'version' => 002,
+			'permanent' => false,
+			'autoload' => true,
+			'singular' => true,
+		);
+	}
+		
+	/**
+	 * Set the default config data
+	 *
+	 */
+	public function __construct() {
+		foreach(self::$defaultConfigData as $key => $value) {
+			$this->set($key, $value); 
+		}
+	}
+	
+	public function init() {
+		$this->addHookBefore('Page::render', $this, "compileLess");
+	}
+	
+	function autoCompileLess($less_fname, $css_fname, $less = null) {
+		// load the cache
+		$cache_fname = $css_fname.".cache";
+		
+		if (file_exists($cache_fname)) {
+			$cache = unserialize(file_get_contents($cache_fname));
+		} else {
+			$cache = $less_fname;
+		}
+		
+		try {
+			$new_cache = lessc::cexecute($cache,false,$less);
+		}
+		catch (Exception $e) {
+			echo "LessPHP parsing error: ".$e->getMessage();
+		}
+		
+		if (!is_array($cache) || $new_cache['updated'] > $cache['updated']) {
+			file_put_contents($cache_fname, serialize($new_cache));
+			file_put_contents($css_fname, $new_cache['compiled']);
+		}	
+	}
+
+	public function compileLess(HookEvent $event) {
+		
+		if($event->object->template == "admin") return;
+		//for now lessc.inc.php is in the same foldes where LessCompiles module
+		$dirname = dirname(__FILE__); 
+		include($dirname.'/lessc.inc.php');
+		//path to a folder with .less files, can't have them in subfolders for now
+		$lesspath = $this->data['less_folder_path'];
+		//path to a folder to save compiled .css
+		$csspath = $this->data['css_folder_path'];
+		
+		$lessfiles = explode(',',$this->data['less_files_list']);
+		
+		$compile = $this->data['compile_not_minified'];
+		$compileMinified = $this->data['compile_minified'];
+		
+		//get lessc instance
+		$lessc = new lessc();
+		
+		//go through all the less files specified
+		foreach ($lessfiles as $lessfile) {
+		
+			$lessfile = trim($lessfile);
+			$lessfile = $this->config->paths->templates.$lesspath.'/'.$lessfile;
+			$filename = pathinfo($lessfile, PATHINFO_FILENAME);
+			//name our css file the same name that corresponding less file except file extention
+			$cssfile = $this->config->paths->templates.$csspath."/".$filename.".css";
+			//filename for minified version
+			$cssfileMin = $this->config->paths->templates.$csspath."/".$filename.".min.css";
+			
+			// if chosen to compile not minified
+			if ($compile) {
+					//compile with caching
+					$this->autoCompileLess($lessfile, $cssfile, $lessc);
+			}
+			// if chosen to compile minified
+			if ($compileMinified) {
+					//set to minify
+					$lessc->setFormatter("compressed");
+					//compile with caching
+					$this->autoCompileLess($lessfile, $cssfileMin, $lessc);
+			}
+		}
+	}
+	
+	static public function getModuleConfigInputfields(array $data) {
+
+		$fields = new InputfieldWrapper();
+		$fields->description = "Here you can specify plugin's options";
+		
+		foreach(self::$defaultConfigData as $key => $value) {
+			if(!isset($data[$key])) $data[$key] = $value; 
+		}
+		
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'less_folder_path');
+		$f->attr('value', $data['less_folder_path']);
+		$f->label = "Less Files Path";
+		$f->description = "Path to less files folder to be compiled. Please specify it relative to /templates folder without starting or ending trailing slashes. For example, default folder is 'bootstrap/less', so in order it to work please place /bootstrap folder with all its content in your /templates folder";
+		$fields->add($f);
+		
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'less_files_list');
+		$f->attr('value', $data['less_files_list']);
+		$f->label = "Less Files List";
+		$f->description = "List of less files to compile separated by commas (with file extension, for example mixins.less)";
+		$fields->add($f);
+		
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'css_folder_path');
+		$f->attr('value', $data['css_folder_path']);
+		$f->label = "CSS Files Path";
+		$f->description = "Folder to output compiles CSS files with trailing slash. Please specify it relative to /templates folder with starting or ending trailing slashes.";
+		$fields->add($f);
+		
+		$f = wire('modules')->get("InputfieldCheckbox");
+		$f->name = "compile_not_minified";
+		$f->label = "Compile not minified";
+		$f->description = "Create css file without compression.";
+		$f->value = 1; // providing a "checked" value for the checkbox is necessary
+		$checked = $data['compile_not_minified'];
+		$f->attr('checked', $checked ? 'checked' : '');
+		$fields->add($f);
+		
+		$f = wire('modules')->get("InputfieldCheckbox");
+		$f->name = "compile_minified";
+		$f->label = "Compile minified";
+		$f->description = "Create compressed css file (will looke like this: original_filename.min.css).";
+		$f->value = 1; // providing a "checked" value for the checkbox is necessary
+		$checked = $data['compile_minified'];
+		$f->attr('checked', $checked ? 'checked' : '');
+		$fields->add($f);
+
+		// since this is a static function, we can't use $this->modules, so get them from the global wire() function
+		$modules = wire('modules');
+
+		return $fields;
+	}
+}
+?>
